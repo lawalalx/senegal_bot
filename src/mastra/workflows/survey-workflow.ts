@@ -2,8 +2,9 @@ import "dotenv/config";
 
 import { createStep, createWorkflow } from '@mastra/core/workflows'
 import { z } from 'zod'
-import { sendWhatsAppSurvey, sendWhatsAppMessage, sendWhatsAppTemplate, sendWhatsAppList } from '../../whatsapp-client'
 import { surveyTemplates } from '../../surveyTemplates'
+import { normalizePhone } from "../../utils/format_phone";
+import { sendSurveyQuestion } from "../../utils/survey.sender";
 
 // ─── Step 1: Generate survey content using the Survey Agent ──────────────────
 
@@ -80,7 +81,6 @@ const generateSurveyContent = createStep({
 })
 
 // ─── Step 2: Send all survey questions sequentially via WhatsApp ─────────────
-
 const sendSurveyQuestions = createStep({
   id: 'send-survey-questions',
   description: 'Send each survey question as a separate interactive WhatsApp message',
@@ -104,7 +104,6 @@ const sendSurveyQuestions = createStep({
   execute: async ({ inputData, mastra }) => {
     const { to, surveyId, questions } = inputData
     const surveySessionId = `${surveyId}_${Date.now()}`
-    let questionsSent = 0
 
     // Store survey session in Postgres for response tracking
     const storage = mastra?.getStorage()
@@ -115,85 +114,62 @@ const sendSurveyQuestions = createStep({
           // Use the underlying db client for custom tables
           const pgStore = storage as any
           if (pgStore.db) {
-            await pgStore.db.none(
-              `INSERT INTO survey_sessions (id, survey_id, customer_phone, total_questions, questions_data, responses_data, status, created_at, updated_at)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+            const result = await pgStore.db.any(
+              `INSERT INTO survey_sessions (
+                id,
+                survey_id,
+                customer_phone,
+                current_question,
+                total_questions,
+                questions_data,
+                status,
+                created_at,
+                updated_at
+              )
+              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
               [
                 surveySessionId,
                 surveyId,
-                to,
+                normalizePhone(to),
+                0,
                 questions.length,
                 JSON.stringify(questions),
-                JSON.stringify([]),
-                'in_progress',
+                'active',
                 new Date().toISOString(),
                 new Date().toISOString(),
               ]
             )
-          }
+            console.log("\n\nDB INSERT RESULT:", result);
+          } 
         }
       } catch (err) {
         // Table might not exist yet — we'll handle this gracefully
-        console.warn('Could not store survey session (table may not exist):', err)
+        console.error('❌ FAILED TO SAVE SESSION:', err)
+        throw err
       }
     }
 
 
-    for (let i = 0; i < questions.length; i++) {
-      const q = questions[i]
-      const headerText = i === 0 ? `📊 FBNBank Survey (${questions.length} questions)` : undefined
-      const footerText = `Question ${i + 1} of ${questions.length}`
-      let sent = false
+    const firstQuestion = questions[0]
 
-      // Dynamic UI selection
-      if (q.type === 'button' && q.options && q.options.length <= 3) {
-        sent = await sendWhatsAppSurvey({
-          to,
-          surveyId: `${surveySessionId}_q${i + 1}`,
-          question: q.text || q.question,
-          options: q.options,
-          headerText,
-          footerText,
-        })
-      } else if (q.type === 'list' && q.options && q.options.length > 0) {
-        sent = await sendWhatsAppList({
-          to,
-          headerText,
-          bodyText: q.text || q.question,
-          footerText,
-          buttonText: 'Select',
-          sections: [
-            {
-              title: q.sectionTitle || 'Options',
-              rows: q.options.map((opt, idx) => ({
-                id: `${surveySessionId}_q${i + 1}_opt${idx + 1}`,
-                title: opt,
-              })),
-            },
-          ],
-        })
-      } else if (q.type === 'text') {
-        // For open-ended, just send a text message
-        // continue; // Skip sending a message for text type, as we will capture the response in the next step
-        sent = await sendWhatsAppMessage({
-          to,
-          message: `${q.text || q.question}\n(Reply with your answer)`,
-        })
-      }
+    const sent = await sendSurveyQuestion({
+      to,
+      session: {
+        id: surveySessionId,
+        current_question: 0,
+        total_questions: questions.length,
+      },
+      question: firstQuestion,
+    })
 
-      if (sent) questionsSent++
 
-      // Small delay between messages to avoid rate limiting
-      if (i < questions.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, 1500))
-      }
-    }
-
-    return {
-      success: questionsSent === questions.length,
-      questionsSent,
+    const result =  {
+      success: sent,
+      questionsSent: sent ? 1 : 0,
       surveySessionId,
-    }
+    };
+
+    return result
   },
 })
 

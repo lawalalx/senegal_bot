@@ -4,72 +4,134 @@
 //
 // Mastra auto-creates its own tables (threads, messages, traces, etc.)
 // but we need custom tables for survey tracking.
-
-import pg from 'pg'
-
-const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/senegaldb'
+import pool from "./db";
 
 async function initDatabase() {
-  const pool = new pg.Pool({ connectionString: DATABASE_URL })
 
   try {
-    console.log('🔧 Connecting to PostgreSQL...')
-    const client = await pool.connect()
+    console.log('🔧 Connecting to PostgreSQL...');
+    const client = await pool.connect();
 
-    console.log('📦 Creating survey tables...')
+    console.log('📦 Initializing database...');
 
-    // Survey sessions — tracks each survey dispatch to a customer
+    // ───────────────────────────────────────────────────────────
+    // Enable extension (for UUID if you switch later)
+    // ───────────────────────────────────────────────────────────
+    await client.query(`
+      CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+    `);
+
+    // ───────────────────────────────────────────────────────────
+    // Survey Sessions Table
+    // ───────────────────────────────────────────────────────────
     await client.query(`
       CREATE TABLE IF NOT EXISTS survey_sessions (
-        id              TEXT PRIMARY KEY,
-        survey_id       TEXT NOT NULL,
-        customer_phone  TEXT NOT NULL,
-        total_questions INTEGER NOT NULL DEFAULT 1,
-        questions_data  JSONB NOT NULL DEFAULT '[]'::jsonb,
-        responses_data  JSONB NOT NULL DEFAULT '[]'::jsonb,
-        status          TEXT NOT NULL DEFAULT 'in_progress',
-        created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-    `)
+        id                TEXT PRIMARY KEY,
+        survey_id         TEXT NOT NULL,
+        customer_phone    TEXT NOT NULL,
 
-    // Survey responses — individual question-level responses
+        current_question  INTEGER NOT NULL DEFAULT 0,
+        total_questions   INTEGER NOT NULL,
+
+        questions_data    JSONB NOT NULL DEFAULT '[]'::jsonb,
+
+        status            TEXT NOT NULL DEFAULT 'active'
+                          CHECK (status IN ('active', 'completed', 'abandoned')),
+
+        expires_at        TIMESTAMPTZ,
+
+        created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+
+    // ───────────────────────────────────────────────────────────
+    // Survey Responses Table
+    // ───────────────────────────────────────────────────────────
     await client.query(`
       CREATE TABLE IF NOT EXISTS survey_responses (
-        id              TEXT PRIMARY KEY,
-        survey_id       TEXT NOT NULL,
-        session_id      TEXT NOT NULL,
-        customer_phone  TEXT NOT NULL,
-        question_text   TEXT,
-        question_id     TEXT NOT NULL,
-        response_text   TEXT NOT NULL,
-        response_id     TEXT,
-        created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        id               TEXT PRIMARY KEY,
+        survey_id        TEXT NOT NULL,
+        session_id       TEXT NOT NULL,
+        customer_phone   TEXT NOT NULL,
+
+        question_text    TEXT,
+        question_id      TEXT NOT NULL,
+
+        response_text    TEXT NOT NULL,
+        response_id      TEXT,
+
+        created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+        CONSTRAINT fk_session
+          FOREIGN KEY (session_id)
+          REFERENCES survey_sessions(id)
+          ON DELETE CASCADE,
+
+        CONSTRAINT unique_response_per_question
+          UNIQUE (session_id, question_id)
       );
-    `)
+    `);
 
-    // Indexes for fast lookups
+    // ───────────────────────────────────────────────────────────
+    // Indexes (Performance critical)
+    // ───────────────────────────────────────────────────────────
     await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_survey_responses_survey_id ON survey_responses (survey_id);
-      CREATE INDEX IF NOT EXISTS idx_survey_responses_phone ON survey_responses (customer_phone);
-      CREATE INDEX IF NOT EXISTS idx_survey_sessions_survey_id ON survey_sessions (survey_id);
-      CREATE INDEX IF NOT EXISTS idx_survey_sessions_phone ON survey_sessions (customer_phone);
-      CREATE INDEX IF NOT EXISTS idx_survey_sessions_status ON survey_sessions (status);
-    `)
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_survey_responses_session_id 
+      CREATE INDEX IF NOT EXISTS idx_active_session
+      ON survey_sessions (customer_phone, status);
+
+      CREATE INDEX IF NOT EXISTS idx_survey_sessions_survey_id
+      ON survey_sessions (survey_id);
+
+      CREATE INDEX IF NOT EXISTS idx_survey_responses_session_id
       ON survey_responses (session_id);
-    `)
 
-    client.release()
-    console.log('✅ Database initialized successfully!')
-    console.log('   Tables created: survey_sessions, survey_responses')
+      CREATE INDEX IF NOT EXISTS idx_session_question
+      ON survey_responses (session_id, question_id);
+
+      CREATE INDEX IF NOT EXISTS idx_survey_responses_survey_id
+      ON survey_responses (survey_id);
+    `);
+
+    // ───────────────────────────────────────────────────────────
+    // Auto-update updated_at trigger
+    // ───────────────────────────────────────────────────────────
+    await client.query(`
+      CREATE OR REPLACE FUNCTION update_updated_at_column()
+      RETURNS TRIGGER AS $$
+      BEGIN
+        NEW.updated_at = NOW();
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_trigger
+          WHERE tgname = 'trigger_update_survey_sessions_updated_at'
+        ) THEN
+          CREATE TRIGGER trigger_update_survey_sessions_updated_at
+          BEFORE UPDATE ON survey_sessions
+          FOR EACH ROW
+          EXECUTE FUNCTION update_updated_at_column();
+        END IF;
+      END;
+      $$;
+    `);
+
+    client.release();
+
+    console.log('✅ Database initialized successfully!');
+    console.log('   Tables: survey_sessions, survey_responses');
   } catch (error) {
-    console.error('❌ Database initialization failed:', error)
-    process.exit(1)
+    console.error('❌ Database initialization failed:', error);
+    process.exit(1);
   } finally {
-    await pool.end()
+    await pool.end();
   }
 }
 
-initDatabase()
+initDatabase();

@@ -2,6 +2,7 @@
 // Supports: text messages, interactive button surveys, template messages,
 // and list messages for multi-option surveys.
 import "dotenv/config";
+import { SendSurveyParams } from "./flow.types";
 
 const getConfig = () => {
   const apiVersion = process.env.WHATSAPP_API_VERSION || 'v22.0';
@@ -48,61 +49,95 @@ export async function sendWhatsAppMessage({ to, message }: SendMessageParams): P
     type: 'text',
     text: { body: message },
   });
+  console.log(`📤 Sending message to ${to}: "${message}"`);
   if (ok) console.log(`✅ Text sent to ${to}`);
   return ok;
 }
 
 // ─── 2. Interactive button survey (max 3 buttons) ────────────────────────────
 
-export interface SendSurveyParams {
-  to: string;
-  surveyId: string;
-  question: string;
-  options: string[];
-  headerText?: string;
-  footerText?: string;
-}
-
 export async function sendWhatsAppSurvey({
   to,
-  surveyId,
   question,
   options,
   headerText,
   footerText,
-}: SendSurveyParams): Promise<boolean> {
-  // WhatsApp enforces max 3 buttons for interactive button messages
-  const safeOptions = options.slice(0, 3);
+}: SendSurveyParams & { options?: { id: string; title: string }[] }): Promise<boolean> {
+  const safeString = (v: any, fallback = '') => String(v ?? fallback);
 
-  const interactive: Record<string, unknown> = {
-    type: 'button',
-    body: { text: question },
-    action: {
-      buttons: safeOptions.map((opt, i) => ({
-        type: 'reply',
-        reply: {
-          id: `${surveyId}_q_${i + 1}`,
-          title: opt.substring(0, 20), // button title limit
+  if (!question) {
+    console.error('❌ Missing survey question');
+    return false;
+  }
+
+  const safeOptions = (options ?? [])
+    .filter(opt => opt?.id && opt?.title)
+    .slice(0, 3);
+
+  try {
+    let payload: any;
+
+    // ─── CASE 1: TEXT QUESTION (NO OPTIONS) ───
+    if (safeOptions.length === 0) {
+      payload = {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to,
+        type: 'text',
+        text: {
+          body: safeString(question),
         },
-      })),
-    },
-  };
+      };
 
-  if (headerText) interactive.header = { type: 'text', text: headerText.substring(0, 60) };
-  if (footerText) interactive.footer = { text: footerText.substring(0, 60) };
+      const { ok, data } = await post(payload);
 
-  const { ok } = await post({
-    messaging_product: 'whatsapp',
-    recipient_type: 'individual',
-    to,
-    type: 'interactive',
-    interactive,
-  });
-  if (ok) console.log(`✅ Survey sent to ${to}: "${question}"`);
-  return ok;
+      if (ok) console.log(`📝 Text survey sent to ${to}`);
+      else console.error('❌ WhatsApp API failed:', data);
+
+      return ok;
+    }
+
+    // ─── CASE 2: BUTTON QUESTION (1–3 OPTIONS) ───
+    payload = {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to,
+      type: 'interactive',
+      interactive: {
+        type: 'button',
+        body: { text: safeString(question) },
+        action: {
+          buttons: safeOptions.map(opt => ({
+            type: 'reply',
+            reply: {
+              id: opt.id,
+              title: safeString(opt.title).substring(0, 50),
+            },
+          })),
+        },
+        header: headerText
+          ? { type: 'text', text: safeString(headerText).substring(0, 60) }
+          : undefined,
+        footer: footerText
+          ? { text: safeString(footerText).substring(0, 60) }
+          : undefined,
+      },
+    };
+
+    const { ok, data } = await post(payload);
+
+    if (ok) console.log(`✅ Survey sent to ${to}: "${question}"`);
+    else console.error('❌ WhatsApp API failed:', data);
+
+    return ok;
+  } catch (err) {
+    console.error('❌ sendWhatsAppSurvey crashed:', err);
+    return false;
+  }
 }
 
-// ─── 3. Interactive list message (for surveys with > 3 options) ──────────────
+
+
 
 export interface ListSection {
   title: string;
@@ -117,6 +152,8 @@ export interface SendListParams {
   buttonText: string;
   sections: ListSection[];
 }
+
+
 
 export async function sendWhatsAppList({
   to,
