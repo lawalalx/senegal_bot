@@ -1,10 +1,9 @@
 {
-  {
-    "version": "1.0",
-    "name": "customer_satisfaction_survey",
-    "states": [
-      {
-        "id": "start",
+  "version": "1.0",
+  "name": "customer_satisfaction_survey",
+  "states": [
+    {
+      "id": "start",
         "type": "start",
         "transitions": [{ "event": "next", "target": "q1" }]
       },
@@ -39,4 +38,4 @@
         "type": "end"
       }
     ]
-  }
+}
