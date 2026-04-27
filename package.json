@@ -29,6 +29,7 @@
     "@mastra/memory": "^1.17.0",
     "@mastra/observability": "^1.10.0",
     "@mastra/pg": "^1.9.0",
+    "form-data": "^4.0.5",
     "pg": "^8.20.0",
     "zod": "^4.3.6"
   },

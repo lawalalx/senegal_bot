@@ -65,7 +65,7 @@ app.post('/webhook', async (req: Request, res: Response) => {
       throw new Error('DB not initialized');
     }
 
-    // ✅ Call your router (THIS is the key line)
+    //  Call your router (THIS is the key line)
     await routeIncomingMessage({
       db,
       mastra,
