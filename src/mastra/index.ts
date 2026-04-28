@@ -55,27 +55,44 @@ const getDb = () => (pgStorage as any).db;
 const routes = [
 
   /* -------------------------- SEND SINGLE SURVEY -------------------------- */
+
   registerApiRoute("api/crm/send-survey", {
     method: "POST",
     handler: async (c) => {
       const body = await c.req.json().catch(() => null);
 
-      if (!body?.to || !body?.surveyId || !body?.topic) {
-        return c.json({ error: "Missing required fields" }, 400);
+      // Required fields
+      if (!body?.to || !body?.surveyId || !body?.topic || !body?.mode) {
+        return c.json({ error: "Missing required fields (to, surveyId, topic, mode)" }, 400);
+      }
+
+      const { to, surveyId, topic, mode, context } = body;
+
+      // Only allow valid modes
+      if (!['ai', 'manual', 'meta'].includes(mode)) {
+        return c.json({ error: "Invalid mode. Must be one of: ai, manual, meta" }, 400);
       }
 
       try {
+        if (mode === 'meta') {
+          // Send Meta WhatsApp survey template (no workflow)
+          // Use sendMetaTemplate helper
+          const { sendMetaTemplate } = await import("./sendMetaTemplate");
+          const metaResult = await sendMetaTemplate({ to, surveyId, topic });
+          return c.json({ success: true, mode: 'meta', metaResult });
+        }
+
+        // For ai/manual, run the workflow
         const workflow = c.get("mastra").getWorkflow("surveyWorkflow");
         const run = await workflow.createRun();
 
-        const result = await run.start({
-          inputData: body,
-        });
-
-        return c.json({ success: true, result });
+        // Pass context if present (type-safe)
+        const inputData = { to, surveyId, topic, ...(context ? { context } : {}), mode };
+        const result = await run.start({ inputData });
+        return c.json({ success: true, mode, result });
       } catch (error) {
         return c.json(
-          { error: "Survey workflow failed", details: (error as Error).message },
+          { error: "Survey send failed", details: (error as Error).message },
           500
         );
       }
@@ -95,22 +112,36 @@ const routes = [
       const workflow = c.get("mastra").getWorkflow("surveyWorkflow");
 
       const results = await Promise.all(
-        body.customers.map(async (customer: { to: string }) => {
+        body.customers.map(async (customer: any) => {
+          // customer may be a string (phone) or an object { to, mode, context }
+          const to = typeof customer === 'string' ? customer : customer?.to;
+          const customerMode = (typeof customer === 'object' && customer?.mode) || body.mode;
+          const customerContext = (typeof customer === 'object' && customer?.context) || body.context;
+
+          if (!to) {
+            return { to: null, success: false, error: 'Invalid input data: \n- to: Invalid input: expected string, received undefined' };
+          }
+
           try {
+            // Respect meta mode: send template directly
+            const mode = customerMode || body.mode;
+            if (mode === 'meta') {
+              const { sendMetaTemplate } = await import("./sendMetaTemplate");
+              const metaResult = await sendMetaTemplate({ to, surveyId: body.surveyId, topic: body.topic });
+              return { to, success: true, mode: 'meta', metaResult };
+            }
+
+            // For ai/manual, start a workflow run
             const run = await workflow.createRun();
+            const inputData: any = { to, surveyId: body.surveyId, topic: body.topic };
+            if (customerContext) inputData.context = customerContext;
+            if (mode) inputData.mode = mode;
 
-            const result = await run.start({
-              inputData: {
-                to: customer.to,
-                surveyId: body.surveyId,
-                topic: body.topic,
-              },
-            });
-
-            return { to: customer.to, success: true, result };
+            const result = await run.start({ inputData });
+            return { to, success: true, result };
           } catch (error) {
             return {
-              to: customer.to,
+              to,
               success: false,
               error: (error as Error).message,
             };

@@ -7,7 +7,8 @@ registerApiRoute('/webhook', {
     const mode = c.req.query('hub.mode');
     const token = c.req.query('hub.verify_token');
     const challenge = c.req.query('hub.challenge');
-    if (mode === 'subscribe' && token === process.env.VERIFY_TOKEN) {
+    // Only return the challenge when it's a string (avoid passing undefined)
+    if (mode === 'subscribe' && token === process.env.VERIFY_TOKEN && typeof challenge === 'string') {
       return c.text(challenge, 200);
     }
     return c.text('Forbidden', 403);

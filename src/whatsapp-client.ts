@@ -3,6 +3,7 @@
 // and list messages for multi-option surveys.
 import "dotenv/config";
 import { SendSurveyParams } from "./flow.types";
+import { normalizePhone } from './utils/format_phone';
 
 const getConfig = () => {
   const apiVersion = process.env.WHATSAPP_API_VERSION || 'v22.0';
@@ -22,16 +23,50 @@ const getConfig = () => {
 
 async function post(payload: Record<string, unknown>): Promise<{ ok: boolean; data: any }> {
   const { url, headers } = getConfig();
-  const res = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(payload),
-  });
-  const data = await res.json();
-  if (!res.ok) {
-    console.error('❌ WhatsApp API error:', JSON.stringify(data, null, 2));
+  // Log request payload (safe) to help debug delivery problems
+  try {
+    console.log('WhatsApp API request URL:', url);
+    // Do not print the full Authorization header; just indicate presence
+    console.log('WhatsApp API request headers: { Content-Type:', headers['Content-Type'], ', Authorization: <hidden> }');
+    console.log('WhatsApp API request payload:', JSON.stringify(payload, null, 2));
+  } catch (e) {
+    // ignore logging errors
   }
-  return { ok: res.ok, data };
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+    });
+
+    let data: any = null;
+    try {
+      data = await res.json();
+    } catch (e) {
+      data = await res.text().catch(() => null);
+    }
+
+    console.log('WhatsApp API response status:', res.status, res.statusText);
+    console.log('WhatsApp API response body:', JSON.stringify(data, null, 2));
+
+    // Additional sanity checks: successful HTTP but missing messages
+    if (res.ok) {
+      if (!data) {
+        console.warn('⚠️ WhatsApp API returned empty body despite 2xx status');
+      } else if (!data.messages && !data.error) {
+        console.warn('⚠️ WhatsApp API 2xx response without messages or error field:', Object.keys(data));
+      }
+    }
+
+    if (!res.ok) {
+      console.error('❌ WhatsApp API error:', JSON.stringify(data, null, 2));
+    }
+
+    return { ok: res.ok, data };
+  } catch (err) {
+    console.error('❌ WhatsApp API request failed:', err);
+    return { ok: false, data: err };
+  }
 }
 
 // ─── 1. Plain text message ───────────────────────────────────────────────────
@@ -42,16 +77,63 @@ export interface SendMessageParams {
 }
 
 export async function sendWhatsAppMessage({ to, message }: SendMessageParams): Promise<boolean> {
-  const { ok } = await post({
+  console.log('sendWhatsAppMessage called with:', { to, message });
+  const toNormalized = normalizePhone(String(to));
+  if (toNormalized !== String(to)) {
+    console.log(`Normalized recipient from ${to} -> ${toNormalized}`);
+  }
+  const { ok, data } = await post({
     messaging_product: 'whatsapp',
     recipient_type: 'individual',
-    to,
+    to: toNormalized,
     type: 'text',
     text: { body: message },
   });
+  console.log('WhatsApp API returned for sendWhatsAppMessage:', JSON.stringify(data, null, 2));
   console.log(`📤 Sending message to ${to}: "${message}"`);
-  if (ok) console.log(`✅ Text sent to ${to}`);
+  if (ok) {
+    const msgId = data?.messages?.[0]?.id;
+    if (msgId) console.log(`✅ Text sent to ${to} (message_id: ${msgId})`);
+    else console.log(`✅ Text sent to ${to} (no message_id in response)`);
+  }
+  else console.error('❌ WhatsApp API failed:', data);
   return ok;
+}
+
+// ─── Typing indicator ───────────────────────────────────────────────────────
+// Sends a typing indicator action to the WhatsApp Cloud API. This should be
+// followed by the actual message send. The Cloud API accepts a message with
+// `type: 'action'` and `action: { typing: 'true' }` to show typing.
+export async function sendWhatsAppTyping({ to }: { to: string }): Promise<boolean> {
+  try {
+    const toNormalized = normalizePhone(String(to));
+    // Use the dedicated typing_indicators endpoint (Cloud API)
+    const apiVersion = process.env.WHATSAPP_API_VERSION || 'v22.0';
+    const phoneNumberId = process.env.WHATSAPP_BUSINESS_PHONE_NUMBER_ID;
+    if (!phoneNumberId) throw new Error('Missing WHATSAPP_BUSINESS_PHONE_NUMBER_ID');
+    const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/typing_indicators`;
+    const { url: _, headers } = getConfig();
+    // post directly to typing_indicators endpoint
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ messaging_product: 'whatsapp', to: toNormalized }),
+    });
+
+    let data: any = null;
+    try { data = await res.json(); } catch (e) { data = await res.text().catch(() => null); }
+
+    if (res.ok) {
+      console.log(`💬 Sent typing indicator to ${to}`);
+      return true;
+    }
+
+    console.warn('❌ Typing indicator failed:', data);
+    return false;
+  } catch (err) {
+    console.error('❌ sendWhatsAppTyping crashed:', err);
+    return false;
+  }
 }
 
 // ─── 2. Interactive button survey (max 3 buttons) ────────────────────────────
@@ -78,11 +160,16 @@ export async function sendWhatsAppSurvey({
     let payload: any;
 
     // ─── CASE 1: TEXT QUESTION (NO OPTIONS) ───
+    const toNormalized = normalizePhone(String(to));
+    if (toNormalized !== String(to)) {
+      console.log(`Normalized recipient from ${to} -> ${toNormalized}`);
+    }
+
     if (safeOptions.length === 0) {
       payload = {
         messaging_product: 'whatsapp',
         recipient_type: 'individual',
-        to,
+        to: toNormalized,
         type: 'text',
         text: {
           body: safeString(question),
@@ -101,7 +188,7 @@ export async function sendWhatsAppSurvey({
     payload = {
       messaging_product: 'whatsapp',
       recipient_type: 'individual',
-      to,
+      to: toNormalized,
       type: 'interactive',
       interactive: {
         type: 'button',

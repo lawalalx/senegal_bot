@@ -13,7 +13,9 @@ const generateSurveyContent = createStep({
   description: 'Generate one or more survey questions from a topic using the Survey Agent',
   inputSchema: z.object({ 
     topic: z.string(),
-    surveyId: z.string().optional()
+    surveyId: z.string().optional(),
+    context: z.string().optional(),
+    mode: z.enum(['ai', 'manual']).optional(),
   }),
   outputSchema: z.object({
     questions: z.array(z.object({
@@ -26,28 +28,60 @@ const generateSurveyContent = createStep({
     })),
   }),
   execute: async ({ inputData, mastra }) => {
-    // If surveyId matches a demo template, use it
-    const demo = surveyTemplates.find(s => s.id === inputData.surveyId)
-    if (demo) {
-      return {
-        questions: demo.questions.map(q => ({
-          question: q.text,
-          options: q.options || [],
-          type: q.type,
-          text: q.text,
-          sectionTitle: q.sectionTitle,
-          placeholder: q.placeholder,
-        })),
+    // Route by mode: manual = use local template, ai = generate
+    if (inputData.mode === 'manual') {
+      // Prefer data/<surveyId>.json if present (created via admin endpoint),
+      // otherwise fall back to compiled `surveyTemplates`.
+      try {
+        const fs = await import('fs/promises');
+        const p = `${process.cwd()}/data/${inputData.surveyId}.json`;
+        const raw = await fs.readFile(p, 'utf-8');
+        const parsed = JSON.parse(raw);
+        if (parsed && Array.isArray(parsed.questions)) {
+          return {
+            questions: parsed.questions.map((q: any) => ({
+              question: q.text,
+              options: q.options || [],
+              type: q.type,
+              text: q.text,
+              sectionTitle: q.sectionTitle,
+              placeholder: q.placeholder,
+            })),
+          }
+        }
+      } catch (e) {
+        // ignore and fallback to built-in templates
+      }
+
+      const demo = surveyTemplates.find(s => s.id === inputData.surveyId)
+      if (demo) {
+        return {
+          questions: demo.questions.map(q => ({
+            question: q.text,
+            options: q.options || [],
+            type: q.type,
+            text: q.text,
+            sectionTitle: q.sectionTitle,
+            placeholder: q.placeholder,
+          })),
+        }
+      } else {
+        throw new Error('Manual mode: survey template not found')
       }
     }
 
     const agent = mastra?.getAgent('surveyAgent')
     if (!agent) throw new Error('Survey agent not found')
 
+    // Compose prompt with context if provided
+    let prompt = `Generate a detailed multi-question survey about: ${inputData.topic}`;
+    if (inputData.context) {
+      prompt += `\nContext: ${inputData.context}`;
+    }
+
     // Try multi-question format first
     const response = await agent.generate(
-      [{ role: 'user', content: `Generate a detailed multi-question survey about: ${inputData.topic}` }],
-      
+      [{ role: 'user', content: prompt }],
       {
         structuredOutput: {
           schema: z.object({

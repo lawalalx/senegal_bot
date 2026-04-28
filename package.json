@@ -31,11 +31,14 @@
     "@mastra/pg": "^1.9.0",
     "form-data": "^4.0.5",
     "pg": "^8.20.0",
+    "swagger-jsdoc": "^6.2.8",
+    "swagger-ui-express": "^4.6.3",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",
     "@types/pg": "^8.20.0",
+    "@types/swagger-ui-express": "^4.1.8",
     "mastra": "^1.6.2",
     "nodemon": "^3.1.14",
     "tsx": "^4.21.0",

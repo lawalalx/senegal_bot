@@ -3,6 +3,7 @@ import "dotenv/config";
 import { Agent } from '@mastra/core/agent'
 import { Memory } from '@mastra/memory'
 import { PostgresStore } from '@mastra/pg'
+import { getChatModel } from "../core/llm/provider";
 
 const pgStore = new PostgresStore({
   id: 'survey-agent-memory',
@@ -110,6 +111,6 @@ export const surveyAgent = new Agent({
   </example>
 </examples>
   `,
-  model: 'openai/gpt-4.1-mini',
+  model: getChatModel(),
   memory: new Memory({ storage: pgStore }),
 })
