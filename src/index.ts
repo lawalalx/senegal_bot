@@ -1,136 +1,37 @@
 
 
 import "dotenv/config";
-
+import fs from 'fs/promises';
+import path from 'path';
+import { z } from 'zod';
+import swaggerUi from 'swagger-ui-express';
 import express, { Application, Request, Response } from 'express';
 import { MastraServer } from '@mastra/express';
 import { mastra } from './mastra';
-import { sendWhatsAppMessage, sendWhatsAppSurvey } from './whatsapp-client';
 
+import { sendWhatsAppMessage, sendWhatsAppSurvey, sendWhatsAppReadReceipt } from './whatsapp-client';
+import { lastOutboundType, setLastOutbound } from './utils/outboundTracker';
+import escalationService from './services/escalation-service';
+import { initDatabase } from './db-init';
 // WhatsApp Webhook: Handle incoming messages
 import { routeIncomingMessage } from './webhook/router';
+
+// RAG / Knowledge Base
+import kbUploadRoute from './mastra/core/rag/routes/upload.route';
+import kbDocsRoute from './mastra/core/rag/routes/docs.route';
+import { createKbDocsTable } from './mastra/core/rag/db';
+import { initVectorIndex } from './mastra/core/rag/vector-store';
 
 
 const app: Application = express();
 
 app.use(express.json());
 
-// NOTE: Survey endpoints are handled by Mastra API router
-// /api/crm/send-survey
-// /api/crm/bulk-send-survey
+// Knowledge Base routes
+app.use('/api/kb/upload', kbUploadRoute);
+app.use('/api/kb/docs', kbDocsRoute);
 
 console.log('DB URL from Express Server', process.env.DATABASE_URL);
-
-// WhatsApp Webhook: Verification
-app.get('/webhook', (req: Request, res: Response) => {
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
-
-  if (mode && token) {
-    if (mode === 'subscribe' && token === process.env.WHATSAPP_VERIFY_TOKEN) {
-      console.log('WEBHOOK_VERIFIED');
-      return res.status(200).send(challenge);
-    } else {
-      return res.sendStatus(403);
-    }
-  }
-  return res.sendStatus(400);
-});
-
-
-
-import { lastOutboundType, setLastOutbound } from './utils/outboundTracker';
-
-import fs from 'fs/promises';
-import path from 'path';
-import { z } from 'zod';
-import swaggerUi from 'swagger-ui-express';
-
-app.post('/webhook', async (req: Request, res: Response) => {
-  const body = req.body;
-
-  try {
-    if (!body.object) {
-      return res.sendStatus(404);
-    }
-
-    // Handle message status events (delivery/read) if present
-    const statuses = body?.entry?.[0]?.changes?.[0]?.value?.statuses;
-    if (statuses && Array.isArray(statuses) && statuses.length > 0) {
-      console.log('📣 Received message statuses:', JSON.stringify(statuses, null, 2));
-      // Could update DB with delivery/read receipts here
-      return res.sendStatus(200);
-    }
-
-    const message = body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-    // Try to extract the contact/profile name from the Meta webhook payload
-    const contacts = body?.entry?.[0]?.changes?.[0]?.value?.contacts;
-    const contactName = Array.isArray(contacts) && contacts.length > 0
-      ? (contacts[0]?.profile?.name || contacts[0]?.name || contacts[0]?.pushname || null)
-      : null;
-
-    if (!message) {
-      return res.sendStatus(200);
-    }
-
-    const from = message.from;
-
-    console.log(`📩 Incoming message from ${from}`);
-    console.log(JSON.stringify(message, null, 2));
-
-    //  Get DB + mastra
-    const storage = mastra.getStorage() as any;
-    const db = storage?.db;
-
-    if (!db) {
-      throw new Error('DB not initialized');
-    }
-
-    //  Call your router (THIS is the key line)
-    await routeIncomingMessage({
-      db,
-      mastra,
-      message,
-      phone: from,
-      contactName,
-      lastOutboundType,
-
-      sendMessage: async (to: string, msg: string) => {
-        // mark last outbound as chat
-        setLastOutbound(String(to), 'chat');
-        await sendWhatsAppMessage({ to, message: msg });
-      },
-
-      sendQuestion: async (to: string, question: any, session: any) => {
-        // mark last outbound as survey question
-        setLastOutbound(String(to), 'survey_question');
-
-        // Handle text-only question
-        if (!question.options || question.options.length === 0) {
-          await sendWhatsAppMessage({
-            to,
-            message: question.question || question.text || "Please provide your response:",
-          });
-          return;
-        }
-
-        // Handle interactive (buttons)
-        await sendWhatsAppSurvey({
-          to,
-          surveyId: session.survey_id,
-          question: question.question,
-          options: question.options,
-        });
-      },
-    });
-
-    return res.sendStatus(200);
-  } catch (error) {
-    console.error('❌ Webhook processing error:', error);
-    return res.sendStatus(500);
-  }
-});
 
 // Serve Swagger UI at /docs
 const swaggerDocument = {
@@ -164,6 +65,7 @@ const swaggerDocument = {
       }
     }
   },
+
   paths: {
   '/webhook': {
     post: {
@@ -191,145 +93,6 @@ const swaggerDocument = {
       responses: {
         '200': { description: 'Event received and processed successfully' },
         '500': { description: 'Webhook processing failed' }
-      }
-    }
-  },
-
-  '/admin/survey': {
-    post: {
-      summary: 'Create and store a manual survey template',
-      description: `
-      Creates a reusable survey template and stores it locally as a JSON file.
-
-      These templates are used in "manual" mode when sending surveys, allowing predefined
-      question flows instead of AI-generated ones.
-
-      Use cases:
-      - Regulatory-compliant surveys
-      - Fixed questionnaires (e.g., NPS, onboarding feedback)
-
-      The template must follow the SurveyTemplate schema.
-      `,
-      requestBody: {
-        required: true,
-        content: {
-          'application/json': {
-            schema: { $ref: '#/components/schemas/SurveyTemplate' }
-          }
-        }
-      },
-      responses: {
-        '201': { description: 'Survey template created successfully' },
-        '400': { description: 'Validation failed (invalid structure)' }
-      }
-    }
-  },
-
-  '/admin/survey/{surveyId}/participants': {
-    get: {
-      summary: 'Get survey participants',
-      description: `
-      Returns a list of unique customer phone numbers who have participated in a given survey.
-
-      Data is retrieved from stored survey responses in the database.
-      Useful for:
-      - Analytics
-      - Retargeting campaigns
-      - Follow-up engagement
-      `,
-      parameters: [
-        {
-          name: 'surveyId',
-          in: 'path',
-          required: true,
-          schema: { type: 'string' }
-        }
-        ,
-        {
-          name: 'status',
-          in: 'query',
-          required: false,
-          description: "Filter sessions by status. One of: active, completed, abandoned",
-          schema: { type: 'string', enum: ['active','completed','abandoned'] }
-        }
-      ],
-      responses: {
-        '200': {
-          description: 'Sessions with participant phone lists',
-          content: {
-            'application/json': {
-              schema: {
-                type: 'object',
-                properties: {
-                  surveyId: { type: 'string' },
-                  sessions: {
-                    type: 'array',
-                    items: {
-                      type: 'object',
-                      properties: {
-                        sessionId: { type: 'string' },
-                        phones: { type: 'array', items: { type: 'string' } }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  },
-
-  '/admin/survey/{surveyId}/file': {
-    delete: {
-      summary: 'Delete survey template file',
-      description: `
-      Deletes a locally stored survey template JSON file from the data directory.
-
-      This does NOT delete survey responses stored in the database.
-      Only removes the template definition used for manual survey mode.
-      `,
-      parameters: [
-        {
-          name: 'surveyId',
-          in: 'path',
-          required: true,
-          schema: { type: 'string' }
-        }
-      ],
-      responses: {
-        '200': { description: 'Survey template file deleted successfully' },
-        '404': { description: 'Survey file not found' }
-      }
-    }
-  },
-
-  '/admin/survey/{surveyId}': {
-    delete: {
-      summary: 'Delete survey بالكامل (data + sessions)',
-      description: `
-      Deletes all data associated with a survey, including:
-      - Survey responses
-      - Survey sessions (progress tracking)
-      - Associated template file (if it exists)
-
-      This is a destructive operation and should be used with caution.
-      Typically used for:
-      - Data cleanup
-      - Retesting environments
-      `,
-      parameters: [
-        {
-          name: 'surveyId',
-          in: 'path',
-          required: true,
-          schema: { type: 'string' }
-        }
-      ],
-      responses: {
-        '200': { description: 'Survey data deleted successfully' },
-        '500': { description: 'Failed to delete survey data' }
       }
     }
   },
@@ -377,6 +140,7 @@ const swaggerDocument = {
       }
     }
   },
+
   '/api/crm/bulk-send-survey': {
     post: {
     summary: 'Send surveys to multiple customers',
@@ -506,16 +270,481 @@ const swaggerDocument = {
         '200': { description: 'Stub response returned' }
       }
     }
+  },
+  
+  '/admin/survey': {
+    post: {
+      summary: 'Create and store a manual survey template',
+      description: `
+      Creates a reusable survey template and stores it locally as a JSON file.
+
+      These templates are used in "manual" mode when sending surveys, allowing predefined
+      question flows instead of AI-generated ones.
+
+      Use cases:
+      - Regulatory-compliant surveys
+      - Fixed questionnaires (e.g., NPS, onboarding feedback)
+
+      The template must follow the SurveyTemplate schema.
+      `,
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/SurveyTemplate' }
+          }
+        }
+      },
+      responses: {
+        '201': { description: 'Survey template created successfully' },
+        '400': { description: 'Validation failed (invalid structure)' }
+      }
+    }
+  },
+
+  '/admin/survey/{surveyId}/participants': {
+    get: {
+      summary: 'Get survey participants',
+      description: `
+      Returns a list of unique customer phone numbers who have participated in a given survey.
+
+      Data is retrieved from stored survey responses in the database.
+      Useful for:
+      - Analytics
+      - Retargeting campaigns
+      - Follow-up engagement
+      `,
+      parameters: [
+        {
+          name: 'surveyId',
+          in: 'path',
+          required: true,
+          schema: { type: 'string' }
+        }
+        ,
+        {
+          name: 'status',
+          in: 'query',
+          required: false,
+          description: "Filter sessions by status. One of: active, completed, abandoned",
+          schema: { type: 'string', enum: ['active','completed','abandoned'] }
+        }
+      ],
+      responses: {
+        '200': {
+          description: 'Sessions with participant phone lists',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  surveyId: { type: 'string' },
+                  sessions: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      properties: {
+                        sessionId: { type: 'string' },
+                        phones: { type: 'array', items: { type: 'string' } }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+
+  '/admin/survey/{surveyId}/file': {
+    delete: {
+      summary: 'Delete survey template file',
+      description: `
+      Deletes a locally stored survey template JSON file from the data directory.
+
+      This does NOT delete survey responses stored in the database.
+      Only removes the template definition used for manual survey mode.
+      `,
+      parameters: [
+        {
+          name: 'surveyId',
+          in: 'path',
+          required: true,
+          schema: { type: 'string' }
+        }
+      ],
+      responses: {
+        '200': { description: 'Survey template file deleted successfully' },
+        '404': { description: 'Survey file not found' }
+      }
+    }
+  },
+
+  '/admin/survey/{surveyId}': {
+    delete: {
+      summary: 'Delete survey (data + sessions)',
+      description: `
+      Deletes all data associated with a survey, including:
+      - Survey responses
+      - Survey sessions (progress tracking)
+      - Associated template file (if it exists)
+
+      This is a destructive operation and should be used with caution.
+      Typically used for:
+      - Data cleanup
+      - Retesting environments
+      `,
+      parameters: [
+        {
+          name: 'surveyId',
+          in: 'path',
+          required: true,
+          schema: { type: 'string' }
+        }
+      ],
+      responses: {
+        '200': { description: 'Survey data deleted successfully' },
+        '500': { description: 'Failed to delete survey data' }
+      }
+    }
+  },
+
+  '/admin/escalations': {
+    get: {
+      summary: 'Get escalations',
+      description: `
+      Returns a list of escalations (human handoff / tickets) from the database.
+
+      Useful for:
+      - Monitoring pending tickets
+      - Tracking completed tickets
+      - Analyzing escalation trends
+      `,
+      parameters: [
+        {
+          name: 'status',
+          in: 'query',
+          required: false,
+          description: "Filter escalations by status. One of: pending, completed",
+          schema: { type: 'string', enum: ['pending','completed'] }
+        }
+      ],
+      responses: {
+        '200': {
+          description: 'List of escalations',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    id: { type: 'integer' },
+                    ticket_id: { type: 'string' },
+                    message: { type: 'string' },
+                    category: { type: 'string', enum: ['complaint','enquiry','request'] },
+                    ticket_status: { type: 'string', enum: ['pending','completed'] },
+                    customer_phone: { type: 'string' },
+                    created_at: { type: 'string', format: 'date-time' },
+                    updated_at: { type: 'string', format: 'date-time' }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+
+  '/admin/escalation/{ticketId}/resolve': {
+    post: {
+      summary: 'Resolve escalation',
+      description: `
+      Marks an escalation (human handoff / ticket) as resolved in the database.
+
+      Useful for:
+      - Closing completed tickets
+      - Updating ticket status
+      `,
+      parameters: [
+        {
+          name: 'ticketId',
+          in: 'path',
+          required: true,
+          schema: { type: 'string' }
+        }
+      ],
+
+      requestBody: {
+        required: false,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              properties: {
+                ticketStatus: {
+                  type: 'string',
+                  example: 'resolved',
+                  description: 'Status to set (default: resolved)'
+                },
+                to: {
+                  type: 'string',
+                  example: '+2348012345678',
+                  description: 'Customer phone number for notification'
+                },
+                message: {
+                  type: 'string',
+                  example: 'Your issue has been resolved successfully.',
+                  description: 'Optional message to send to customer'
+                }
+              }
+            }
+          }
+        }
+      },
+
+      responses: {
+        '200': { description: 'Escalation resolved successfully' },
+        '400': { description: 'Invalid request' },
+        '404': { description: 'Escalation not found' },
+        '500': { description: 'Failed to resolve escalation' }
+      }
+    }
+  },
+  '/admin/escalation/{ticketId}': {
+    delete: {
+      summary: 'Delete escalation',
+      description: `
+      Deletes an escalation (human handoff / ticket) from the database.
+
+      Useful for:
+      - Removing resolved/completed tickets
+      - Cleaning up old escalations
+      `,
+      parameters: [
+        {
+          name: 'ticketId',
+          in: 'path',
+          required: true,
+          schema: { type: 'string' }
+        }
+      ],
+      responses: {
+        '200': { description: 'Escalation deleted successfully' },
+        '404': { description: 'Escalation not found' },
+        '500': { description: 'Failed to delete escalation' }
+      }
+    }
+  },
+
+
+  '/api/kb/upload': {
+    post: {
+      summary: 'Upload document(s) to knowledge base',
+      description: 'Uploads one or more files (PDF, TXT, CSV, DOCX, DOC, XLSX, XLS) or raw text to the knowledge base. Each document is chunked, embedded, and stored in the vector index.',
+      requestBody: {
+        required: true,
+        content: {
+          'multipart/form-data': {
+            schema: {
+              type: 'object',
+              properties: {
+                files: { type: 'array', items: { type: 'string', format: 'binary' }, description: 'PDF, TXT, CSV, DOCX, DOC, XLSX, or XLS files' },
+                text: { type: 'string', description: 'Raw text to ingest directly' },
+                title: { type: 'string', description: 'Optional document title' }
+              }
+            }
+          }
+        }
+      },
+      responses: {
+        '200': { description: 'Documents ingested successfully' },
+        '400': { description: 'No file or text provided' },
+        '500': { description: 'Ingestion failed' }
+      }
+    }
+  },
+
+  '/api/kb/docs': {
+    get: {
+      summary: 'List all knowledge base documents',
+      description: 'Returns metadata for all documents currently in the knowledge base index.',
+      responses: {
+        '200': {
+          description: 'List of document metadata',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  docs: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      properties: {
+                        doc_id: { type: 'string' },
+                        title: { type: 'string' },
+                        original_name: { type: 'string' },
+                        size: { type: 'integer' },
+                        uploaded_at: { type: 'string', format: 'date-time' }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+
+  '/api/kb/docs/{docId}': {
+    get: {
+      summary: 'Get knowledge base document by ID',
+      parameters: [{ name: 'docId', in: 'path', required: true, schema: { type: 'string' } }],
+      responses: {
+        '200': { description: 'Document metadata' },
+        '404': { description: 'Document not found' }
+      }
+    },
+    delete: {
+      summary: 'Delete a document from the knowledge base',
+      description: 'Removes the document vectors, the uploaded file, and the metadata record.',
+      parameters: [{ name: 'docId', in: 'path', required: true, schema: { type: 'string' } }],
+      responses: {
+        '200': { description: 'Document deleted successfully' },
+        '404': { description: 'Document not found' },
+        '500': { description: 'Deletion failed' }
+      }
+    }
   }
+
 }
 }
 
 
 
 
-// Cast handlers to `any` to avoid type incompatibilities between
-// `swagger-ui-express` and this project's Express types.
+
 app.use('/docs', (swaggerUi.serve as any), (swaggerUi.setup(swaggerDocument) as any));
+
+
+// WhatsApp Webhook: Verification
+app.get('/webhook', (req: Request, res: Response) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  if (mode && token) {
+    if (mode === 'subscribe' && token === process.env.WHATSAPP_VERIFY_TOKEN) {
+      console.log('WEBHOOK_VERIFIED');
+      return res.status(200).send(challenge);
+    } else {
+      return res.sendStatus(403);
+    }
+  }
+  return res.sendStatus(400);
+});
+
+
+
+app.post('/webhook', async (req: Request, res: Response) => {
+  const body = req.body;
+
+  try {
+    if (!body.object) {
+      return res.sendStatus(404);
+    }
+
+    // Handle message status events (delivery/read) if present
+    const statuses = body?.entry?.[0]?.changes?.[0]?.value?.statuses;
+    if (statuses && Array.isArray(statuses) && statuses.length > 0) {
+      console.log('📣 Received message statuses:', JSON.stringify(statuses, null, 2));
+      // Could update DB with delivery/read receipts here
+      return res.sendStatus(200);
+    }
+
+    const message = body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+    // Try to extract the contact/profile name from the Meta webhook payload
+    const contacts = body?.entry?.[0]?.changes?.[0]?.value?.contacts;
+    const contactName = Array.isArray(contacts) && contacts.length > 0
+      ? (contacts[0]?.profile?.name || contacts[0]?.name || contacts[0]?.pushname || null)
+      : null;
+
+    if (!message) {
+      return res.sendStatus(200);
+    }
+
+    const from = message.from;
+    const messageId: string = message.id || '';
+
+    console.log(`📩 Incoming message from ${from}`);
+    console.log(JSON.stringify(message, null, 2));
+
+    // Mark the incoming message as read immediately (turns grey ticks blue)
+    if (messageId) {
+      sendWhatsAppReadReceipt({ messageId }).catch(() => {});
+    }
+
+    //  Get DB + mastra
+    const storage = mastra.getStorage() as any;
+    const db = storage?.db;
+
+    if (!db) {
+      throw new Error('DB not initialized');
+    }
+
+    //  Call your router (THIS is the key line)
+    await routeIncomingMessage({
+      db,
+      mastra,
+      message,
+      phone: from,
+      contactName,
+      messageId,
+      lastOutboundType,
+
+      sendMessage: async (to: string, msg: string) => {
+        // mark last outbound as chat
+        setLastOutbound(String(to), 'chat');
+        await sendWhatsAppMessage({ to, message: msg });
+      },
+
+      sendQuestion: async (to: string, question: any, session: any) => {
+        // mark last outbound as survey question
+        setLastOutbound(String(to), 'survey_question');
+
+        // Handle text-only question
+        if (!question.options || question.options.length === 0) {
+          await sendWhatsAppMessage({
+            to,
+            message: question.question || question.text || "Please provide your response:",
+          });
+          return;
+        }
+
+        // Handle interactive (buttons)
+        await sendWhatsAppSurvey({
+          to,
+          surveyId: session.survey_id,
+          question: question.question,
+          options: question.options,
+        });
+      },
+    });
+
+    return res.sendStatus(200);
+  } catch (error) {
+    console.error('❌ Webhook processing error:', error);
+    return res.sendStatus(500);
+  }
+});
+
+
 
 
 // ---------------- Admin endpoints ----------------
@@ -609,8 +838,6 @@ app.post('/admin/survey', async (req: Request, res: Response) => {
   }
 });
 
-
-
 // DELETE manual survey file from data/<surveyId>.json
 app.delete('/admin/survey/:surveyId/file', async (req: Request, res: Response) => {
   const surveyId = req.params.surveyId;
@@ -667,8 +894,143 @@ app.delete('/admin/survey/:surveyId', async (req: Request, res: Response) => {
   }
 });
 
+// ---------------- Escalation endpoints ----------------
+// GET /admin/escalations?status=pending|completed
+app.get('/admin/escalations', async (req: Request, res: Response) => {
+  try {
+    const status = (req.query.status as string) || undefined;
+    const storage = mastra.getStorage() as any;
+    const db = storage?.db;
+    if (!db) return res.status(500).json({ error: 'DB not initialized' });
+
+    const allowed = ['pending', 'completed'];
+    if (status && !allowed.includes(status)) {
+      return res.status(400).json({ error: `Invalid status. Allowed: ${allowed.join(',')}` });
+    }
+
+    const rows = await escalationService.getEscalations(db, status);
+    return res.json({ escalations: rows });
+  } catch (e) {
+    console.error('Failed to fetch escalations', e);
+    return res.status(500).json({ error: 'failed' });
+  }
+});
 
 
+// body: { ticketId?: string, ticketStatus?: 'pending'|'completed', to?: string, message?: string }
+app.post('/admin/escalation/:ticketId/resolve', async (req: Request, res: Response) => {
+  try {
+    const rawTicketId = req.params.ticketId;
+    const ticketId = Array.isArray(rawTicketId) ? rawTicketId[0] : rawTicketId;
+
+    const { ticketStatus, to, message } = req.body || {};
+
+    if (!ticketId) {
+      return res.status(400).json({ error: 'ticketId is required' });
+    }
+
+    const storage = mastra.getStorage() as any;
+    const db = storage?.db;
+
+    if (!db) {
+      return res.status(500).json({ error: 'DB not initialized' });
+    }
+
+    try {
+      const result = await escalationService.notifyAndMaybeUpdate({
+        db,
+        ticketId,
+        ticketStatus: ticketStatus || 'resolved', // default
+        to,
+        message,
+        sendMessage: async (t: string, m: string) =>
+          sendWhatsAppMessage({ to: t, message: m }),
+      });
+
+      return res.status(200).json({
+        success: true,
+        ticketId,
+        status: ticketStatus || 'resolved',
+        ...result,
+      });
+
+    } catch (err: any) {
+      if (err.message === 'customer_phone (to) is required') {
+        return res.status(400).json({
+          error: 'customer_phone (to) is required or not found for ticketId',
+        });
+      }
+
+      if (err.message === 'not_found') {
+        return res.status(404).json({ error: 'Escalation not found' });
+      }
+
+      console.error('Failed to resolve escalation', err);
+      return res.status(500).json({ error: 'Failed to resolve escalation' });
+    }
+
+  } catch (e) {
+    console.error('Failed to resolve escalation', e);
+    return res.status(500).json({ error: 'Failed to resolve escalation' });
+  }
+});
+
+// delete /admin/escalation/:ticketId - could be added to remove escalations if needed, but not implemented here for safety
+app.delete('/admin/escalation/:ticketId', async (req: Request, res: Response) => {
+  try {
+    const rawTicketId = req.params.ticketId;
+    const ticketId = Array.isArray(rawTicketId) ? rawTicketId[0] : rawTicketId;
+
+    if (!ticketId) {
+      return res.status(400).json({ error: 'ticketId is required' });
+    }
+
+    const storage = mastra.getStorage() as any;
+    const db = storage?.db;
+
+    if (!db) {
+      return res.status(500).json({ error: 'DB not initialized' });
+    }
+
+    // Optional safety: only allow deleting resolved tickets
+    const existing = await db.query(
+      'SELECT id, status FROM escalations WHERE id = $1',
+      [ticketId]
+    );
+
+    if (!existing.rows.length) {
+      return res.status(404).json({ error: 'Escalation not found' });
+    }
+
+    const escalation = existing.rows[0];
+
+    if (escalation.status !== 'resolved' && escalation.status !== 'completed') {
+      return res.status(400).json({
+        error: 'Only resolved/completed escalations can be deleted',
+      });
+    }
+
+    // 🧨 Actual delete
+    await db.query('DELETE FROM escalations WHERE id = $1', [ticketId]);
+
+    return res.status(200).json({
+      success: true,
+      ticketId,
+      deleted: true,
+    });
+
+  } catch (e) {
+    console.error('Failed to delete escalation', e);
+    return res.status(500).json({ error: 'Failed to delete escalation' });
+  }
+});
+
+
+
+
+await initDatabase();
+await createKbDocsTable();
+await initVectorIndex();
 async function startServer() {
   try {
     const server = new MastraServer({ app: app as any, mastra });

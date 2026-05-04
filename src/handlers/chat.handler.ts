@@ -7,12 +7,14 @@ export async function handleChatMessage({
   phone,
   text,
   contactName,
+  messageId,
   sendMessage,
 }: {
   mastra: any;
   phone: string;
   text: string;
   contactName?: string | null;
+  messageId: string;
   sendMessage: (to: string, msg: string) => Promise<void>;
 }) {
   try {
@@ -23,10 +25,10 @@ export async function handleChatMessage({
     // while the agent is generating a response so the user sees activity.
     try {
       // initial ping
-      await sendWhatsAppTyping({ to: phone }).catch(() => {});
+      await sendWhatsAppTyping({ to: phone, messageId }).catch(() => {});
       // keep-alive every 8s
       let intervalId: any = setInterval(() => {
-        sendWhatsAppTyping({ to: phone }).catch(() => {});
+        sendWhatsAppTyping({ to: phone, messageId }).catch(() => {});
       }, 8000);
 
       try {

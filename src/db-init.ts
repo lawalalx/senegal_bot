@@ -6,7 +6,7 @@
 // but we need custom tables for survey tracking.
 import pool from "./db";
 
-async function initDatabase() {
+export const initDatabase = async () => {
 
   try {
     console.log('🔧 Connecting to PostgreSQL...');
@@ -93,6 +93,34 @@ async function initDatabase() {
       ON survey_responses (survey_id);
     `);
 
+      // ───────────────────────────────────────────────────────────
+      // Escalation Table (for human handoff / tickets)
+      // ───────────────────────────────────────────────────────────
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS escalations (
+          id              SERIAL PRIMARY KEY,
+          ticket_id       TEXT UNIQUE NOT NULL,
+          message         TEXT,
+          category        TEXT CHECK (category IN ('complaint','enquiry','request')),
+          ticket_status   TEXT NOT NULL DEFAULT 'pending' CHECK (ticket_status IN ('pending','completed')),
+          customer_phone  TEXT,
+
+          created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+      `);
+
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_escalations_ticket_status
+        ON escalations (ticket_status);
+
+        CREATE INDEX IF NOT EXISTS idx_escalations_ticket_id
+        ON escalations (ticket_id);
+
+        CREATE INDEX IF NOT EXISTS idx_escalations_customer_phone
+        ON escalations (customer_phone);
+      `);
+
     // ───────────────────────────────────────────────────────────
     // Auto-update updated_at trigger
     // ───────────────────────────────────────────────────────────
@@ -122,10 +150,27 @@ async function initDatabase() {
       $$;
     `);
 
+
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_trigger
+          WHERE tgname = 'trigger_update_escalations_updated_at'
+        ) THEN
+          CREATE TRIGGER trigger_update_escalations_updated_at
+          BEFORE UPDATE ON escalations
+          FOR EACH ROW
+          EXECUTE FUNCTION update_updated_at_column();
+        END IF;
+      END;
+      $$;
+    `);
+
     client.release();
 
     console.log('✅ Database initialized successfully!');
-    console.log('   Tables: survey_sessions, survey_responses');
+    console.log('   Tables: survey_sessions, survey_responses, escalations');
   } catch (error) {
     console.error('❌ Database initialization failed:', error);
     process.exit(1);
@@ -133,5 +178,3 @@ async function initDatabase() {
     await pool.end();
   }
 }
-
-initDatabase();

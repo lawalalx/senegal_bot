@@ -11,6 +11,7 @@ import { engagementAgent } from "./agents/engagement-agent";
 
 // Tools
 import {
+  escalateTool,
   sendWhatsAppMessageTool,
   sendWhatsAppSurveyTool,
   sendWhatsAppTemplateTool,
@@ -216,6 +217,9 @@ const routes = [
   }),
 ];
 
+
+
+
 /* -------------------------------------------------------------------------- */
 /*                              MASTRA INSTANCE                               */
 /* -------------------------------------------------------------------------- */
@@ -227,6 +231,7 @@ export const mastra = new Mastra({
     sendWhatsAppMessageTool,
     sendWhatsAppSurveyTool,
     sendWhatsAppTemplateTool,
+    escalateTool,
   },
   storage: pgStorage,
   logger: new PinoLogger({

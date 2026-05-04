@@ -100,24 +100,52 @@ export async function sendWhatsAppMessage({ to, message }: SendMessageParams): P
   return ok;
 }
 
-// ─── Typing indicator ───────────────────────────────────────────────────────
-// Sends a typing indicator action to the WhatsApp Cloud API. This should be
-// followed by the actual message send. The Cloud API accepts a message with
-// `type: 'action'` and `action: { typing: 'true' }` to show typing.
-export async function sendWhatsAppTyping({ to }: { to: string }): Promise<boolean> {
+// ─── Mark message as read (turns grey ticks blue) ───────────────────────────
+// POST to /messages with status=read and the incoming message_id.
+export async function sendWhatsAppReadReceipt({ messageId }: { messageId: string }): Promise<boolean> {
   try {
-    const toNormalized = normalizePhone(String(to));
-    // Use the dedicated typing_indicators endpoint (Cloud API)
-    const apiVersion = process.env.WHATSAPP_API_VERSION || 'v22.0';
-    const phoneNumberId = process.env.WHATSAPP_BUSINESS_PHONE_NUMBER_ID;
-    if (!phoneNumberId) throw new Error('Missing WHATSAPP_BUSINESS_PHONE_NUMBER_ID');
-    const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/typing_indicators`;
-    const { url: _, headers } = getConfig();
-    // post directly to typing_indicators endpoint
+    const { url, headers } = getConfig();
     const res = await fetch(url, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ messaging_product: 'whatsapp', to: toNormalized }),
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        status: 'read',
+        message_id: messageId,
+      }),
+    });
+    if (res.ok) {
+      console.log(`✅ Marked message ${messageId} as read`);
+      return true;
+    }
+    const data = await res.json().catch(() => null);
+    console.warn('⚠️ Read receipt failed:', data);
+    return false;
+  } catch (err) {
+    console.error('❌ sendWhatsAppReadReceipt crashed:', err);
+    return false;
+  }
+}
+
+// ─── Typing indicator ───────────────────────────────────────────────────────
+// Sends a typing indicator to the WhatsApp Cloud API.
+// Requires the wamid of the incoming message being responded to.
+export async function sendWhatsAppTyping({ to, messageId }: { to: string; messageId: string }): Promise<boolean> {
+  try {
+    const apiVersion = process.env.WHATSAPP_API_VERSION || 'v22.0';
+    const phoneNumberId = process.env.WHATSAPP_BUSINESS_PHONE_NUMBER_ID;
+    if (!phoneNumberId) throw new Error('Missing WHATSAPP_BUSINESS_PHONE_NUMBER_ID');
+    const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
+    const { headers } = getConfig();
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        status: 'read',
+        message_id: messageId,
+        typing_indicator: { type: 'text' },
+      }),
     });
 
     let data: any = null;
