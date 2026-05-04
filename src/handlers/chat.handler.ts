@@ -1,6 +1,7 @@
 // webhook/handlers/chat.handler.ts
 
 import { sendWhatsAppTyping } from '../whatsapp-client';
+import { sendAgentReply } from '../utils/send-agent-reply';
 
 export async function handleChatMessage({
   mastra,
@@ -48,10 +49,9 @@ export async function handleChatMessage({
         // stop typing pings once we have a response
         clearInterval(intervalId);
 
-        const reply = response?.text?.trim() || "Sorry, I couldn't process that. Please try again.";
-
-        console.log('Sending WhatsApp message to', phone, 'with reply:', reply);
-        await sendMessage(phone, reply);
+        const rawReply = response?.text?.trim() || "Sorry, I couldn't process that. Please try again.";
+        console.log('Sending WhatsApp message to', phone, 'with raw reply:', rawReply);
+        await sendAgentReply(phone, rawReply);
         return;
       } finally {
         clearInterval(intervalId);
@@ -71,9 +71,9 @@ export async function handleChatMessage({
       },
     });
 
-    const reply = response?.text?.trim() || "Sorry, I couldn't process that. Please try again.";
-    console.log('Sending WhatsApp message to', phone, 'with reply:', reply);
-    await sendMessage(phone, reply);
+    const rawReply = response?.text?.trim() || "Sorry, I couldn't process that. Please try again.";
+    console.log('Sending WhatsApp message to', phone, 'with raw reply:', rawReply);
+    await sendAgentReply(phone, rawReply);
   } catch (error) {
     console.error('❌ Chat handler error:', error);
 

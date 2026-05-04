@@ -157,4 +157,19 @@ export async function routeIncomingMessage({
       sendMessage
     });
   }
+
+  // Handle interactive list_reply taps from the capabilities menu
+  // (only when there is no active survey session — survey list_reply is handled above)
+  if (message.interactive?.list_reply) {
+    const { title } = message.interactive.list_reply as { id: string; title: string };
+    console.log('No survey session for', phone, '— routing list_reply to chat handler. title:', title);
+    return handleChatMessage({
+      mastra,
+      phone,
+      text: title,
+      contactName,
+      messageId,
+      sendMessage,
+    });
+  }
 }
