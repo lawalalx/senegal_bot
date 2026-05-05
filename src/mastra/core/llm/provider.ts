@@ -38,9 +38,9 @@ export function getChatModel(modelName = process.env.OPENAI_MODEL || "gpt-4o-min
 }
 
 export function getEmbeddingModel(modelName = process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small") {
-  if (azureProvider) {
-    return azureProvider.embedding(process.env.AZURE_OPENAI_EMBEDDING_MODEL || modelName);
-  }
+  // if (azureProvider) {
+  //   return azureProvider.embedding(process.env.AZURE_OPENAI_EMBEDDING_MODEL || modelName);
+  // }
 
   return openai.embedding(modelName);
 }
