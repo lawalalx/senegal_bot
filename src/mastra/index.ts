@@ -2,7 +2,7 @@ import "dotenv/config";
 import { Mastra } from "@mastra/core/mastra";
 import { registerApiRoute } from "@mastra/core/server";
 import { PinoLogger } from "@mastra/loggers";
-import { PostgresStore } from "@mastra/pg";
+import { sharedPgStore } from "./core/db/shared-pg-store";
 
 // Workflows & Agents
 import { surveyWorkflow } from "./workflows/survey-workflow";
@@ -34,14 +34,7 @@ import {
 /*                                CONFIG                                      */
 /* -------------------------------------------------------------------------- */
 
-if (!process.env.DATABASE_URL) {
-  throw new Error("DATABASE_URL is required");
-}
-
-const pgStorage = new PostgresStore({
-  id: "main-pg-storage",
-  connectionString: process.env.DATABASE_URL,
-});
+const pgStorage = sharedPgStore;
 
 /* -------------------------------------------------------------------------- */
 /*                                HELPERS                                     */

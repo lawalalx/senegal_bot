@@ -2,15 +2,10 @@ import "dotenv/config";
 
 import { Agent } from '@mastra/core/agent'
 import { Memory } from '@mastra/memory'
-import { PostgresStore } from '@mastra/pg'
 import { escalateTool } from "../tools/escalate-to-human";
 import { knowledgeBaseTool } from "../tools/knowledge-base-tool";
 import { getChatModel } from "../core/llm/provider";
-
-const pgStore = new PostgresStore({
-  id: 'engagement-agent-memory',
-  connectionString: process.env.DATABASE_URL!,
-})
+import { sharedPgStore } from "../core/db/shared-pg-store";
 
 
 export const engagementAgent = new Agent({
@@ -250,7 +245,9 @@ export const engagementAgent = new Agent({
     knowledgeBaseTool,
   },
 
-  memory: new Memory({ storage: pgStore }),
+  // lastMessages caps how many history turns are loaded per request,
+  // preventing unbounded memory growth for long-running conversations.
+  memory: new Memory({ storage: sharedPgStore, options: { lastMessages: 15 } }),
 
   defaultOptions: {
     autoResumeSuspendedTools: true,
