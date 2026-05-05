@@ -4,7 +4,9 @@ import { openai } from "@ai-sdk/openai";
 
 const requestedAzureApiVersion = process.env.AZURE_OPENAI_API_VERSION?.trim();
 const resolvedAzureApiVersion =
-  !requestedAzureApiVersion || requestedAzureApiVersion === "2024-12-01-preview"
+  !requestedAzureApiVersion ||
+  requestedAzureApiVersion === "2024-12-01-preview" ||
+  requestedAzureApiVersion === "2025-01-01-preview"
     ? "2024-08-01-preview"
     : requestedAzureApiVersion;
 
@@ -25,11 +27,11 @@ const azureProvider = azureConfigured
   : null;
 
 export function getChatModel(modelName = process.env.OPENAI_MODEL || "gpt-4o-mini") {
-  if (azureProvider) {
-    const deployment = process.env.AZURE_OPENAI_DEPLOYMENT || process.env.AZURE_DEPLOYMENT_NAME || modelName;
-    console.log(`\n\nUsing Azure OpenAI provider — resource: ${resourceName}, deployment: ${deployment}, api-version: ${resolvedAzureApiVersion}`);
-    return azureProvider.chat(deployment);
-  }
+  // if (azureProvider) {
+  //   const deployment = process.env.AZURE_OPENAI_DEPLOYMENT || process.env.AZURE_DEPLOYMENT_NAME || modelName;
+  //   console.log(`\n\nUsing Azure OpenAI provider — resource: ${resourceName}, deployment: ${deployment}, api-version: ${resolvedAzureApiVersion}`);
+  //   return azureProvider.chat(deployment);
+  // }
 
   console.log(`\n\nUsing OpenAI provider with model: ${modelName}`);
   return openai(modelName);
