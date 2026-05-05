@@ -3,20 +3,22 @@ import { createAzure } from "@ai-sdk/azure";
 import { openai } from "@ai-sdk/openai";
 
 const requestedAzureApiVersion = process.env.AZURE_OPENAI_API_VERSION?.trim();
-// Some resources reject 2024-12-01-preview for /responses; use a safer fallback.
 const resolvedAzureApiVersion =
   !requestedAzureApiVersion || requestedAzureApiVersion === "2024-12-01-preview"
-    ? "preview"
+    ? "2024-08-01-preview"
     : requestedAzureApiVersion;
 
-const azureConfigured =
-  !!(process.env.AZURE_OPENAI_ENDPOINT || process.env.AZURE_OPENAI_BASE_URL || process.env.AZURE_RESOURCE_NAME) &&
-  !!process.env.AZURE_OPENAI_API_KEY;
+// Derive resource name from endpoint if not set explicitly.
+// e.g. "https://fbn-openai-dev.openai.azure.com/" → "fbn-openai-dev"
+const resourceName =
+  process.env.AZURE_RESOURCE_NAME ||
+  process.env.AZURE_OPENAI_ENDPOINT?.match(/https?:\/\/([^.]+)\.openai\.azure\.com/)?.[1];
+
+const azureConfigured = !!resourceName && !!process.env.AZURE_OPENAI_API_KEY;
 
 const azureProvider = azureConfigured
   ? createAzure({
-      baseURL: process.env.AZURE_OPENAI_BASE_URL || process.env.AZURE_OPENAI_ENDPOINT,
-      resourceName: process.env.AZURE_RESOURCE_NAME,
+      resourceName,
       apiKey: process.env.AZURE_OPENAI_API_KEY,
       apiVersion: resolvedAzureApiVersion,
     })
@@ -24,9 +26,9 @@ const azureProvider = azureConfigured
 
 export function getChatModel(modelName = process.env.OPENAI_MODEL || "gpt-4o-mini") {
   if (azureProvider) {
-
-    console.log(`\n\nUsing Azure OpenAI provider with deployment: ${process.env.AZURE_OPENAI_DEPLOYMENT || process.env.AZURE_DEPLOYMENT_NAME || modelName} and API version: ${resolvedAzureApiVersion}`);
-    return azureProvider.chat(process.env.AZURE_OPENAI_DEPLOYMENT || process.env.AZURE_DEPLOYMENT_NAME || modelName);
+    const deployment = process.env.AZURE_OPENAI_DEPLOYMENT || process.env.AZURE_DEPLOYMENT_NAME || modelName;
+    console.log(`\n\nUsing Azure OpenAI provider — resource: ${resourceName}, deployment: ${deployment}, api-version: ${resolvedAzureApiVersion}`);
+    return azureProvider.chat(deployment);
   }
 
   console.log(`\n\nUsing OpenAI provider with model: ${modelName}`);
