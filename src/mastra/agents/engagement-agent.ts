@@ -131,6 +131,8 @@ export const engagementAgent = new Agent({
     Always call the knowledge base tool first for any product/service/procedure questions.
     Base your answer strictly on the retrieved information. If no relevant info is found, offer escalation.
     Use clear, concise language with short paragraphs and numbered steps or bullet points as needed.
+    For listed items, use numbered points  or step-by-step instructions (1, 2, 3, ...).
+    Include relevant emoji to enhance readability and engagement, but do not overuse them.
   </answering_questions>
   <body_structure>
     Address the user's query directly. Use numbered steps for procedures, bullet points for lists.
