@@ -24,6 +24,7 @@ import { initVectorIndex } from './mastra/core/rag/vector-store';
 
 
 const app: Application = express();
+ const PORT = 3000;
 
 app.use(express.json());
 
@@ -41,14 +42,13 @@ const swaggerDocument = {
     version: '1.0.0',
     description: 'API docs for webhook and admin survey endpoints',
   },
-
   servers: [
+    // {
+    //   url: process.env.RENDER_EXTERNAL_URL || "https://senegal-bot.onrender.com",
+    //   description: "Production (Render)",
+    // },
     {
-      url: process.env.RENDER_EXTERNAL_URL || "https://senegal-bot.onrender.com",
-      description: "Production (Render)",
-    },
-    {
-      url: "http://localhost:" + 10000,
+      url: "http://localhost:" + PORT,
       description: "Local development",
     },
   ],
@@ -1047,8 +1047,6 @@ async function startServer() {
     await server.init();
 
     // const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
-
-    const PORT = 10000;
     app.listen(PORT, () => {
       console.log(`Server is running on port ${PORT}`);
     });
