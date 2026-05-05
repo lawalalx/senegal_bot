@@ -41,7 +41,17 @@ const swaggerDocument = {
     version: '1.0.0',
     description: 'API docs for webhook and admin survey endpoints',
   },
-  servers: [{ url: 'http://localhost:3000' }],
+
+  servers: [
+    {
+      url: process.env.RENDER_EXTERNAL_URL || "https://senegal-bot.onrender.com",
+      description: "Production (Render)",
+    },
+    {
+      url: "http://localhost:" + 10000,
+      description: "Local development",
+    },
+  ],
   components: {
     schemas: {
       SurveyQuestion: {
