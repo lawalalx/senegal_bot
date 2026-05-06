@@ -8,7 +8,7 @@
     "test": "tsx src/tests/test-runner.ts",
     "dev": "mastra dev",
     "build": "mastra build",
-    "start": "node --max-old-space-size=1024 --import=tsx/esm src/index.ts",
+    "start": "node --max-old-space-size=384 --import=tsx/esm src/index.ts",
     "webhook": "nodemon --config nodemon.json"
   },
   "keywords": [],
